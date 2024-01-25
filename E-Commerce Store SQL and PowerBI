@@ -1,0 +1,174 @@
+##########################  Overview of Tables Used for Querying  ####################################
+
+--- orders Table Overview ---
+SELECT *
+FROM
+  bigquery-public-data.thelook_ecommerce.orders
+LIMIT 10;
+
+--- order_items Table Overview ---
+SELECT *
+FROM
+  bigquery-public-data.thelook_ecommerce.orders_items
+LIMIT 10;
+
+--- products Table Overview --- 
+SELECT *
+FROM
+  bigquery-public-data.thelook_ecommerce.products
+LIMIT 10;
+
+--- distribution_centers Table Overview ---
+SELECT *
+FROM
+  bigquery-public-data.thelook_ecommerce.distribution_centers
+LIMIT 10;
+
+--- events Table Overview---
+SELECT *
+FROM
+  bigquery-public-data.thelook_ecommerce.events
+LIMIT 10;
+
+##########################  CTE to Join Tables Together and Extract  ####################################
+WITH fulltable as
+(SELECT 
+  *
+FROM
+  bigquery-public-data.thelook_ecommerce.events e
+JOIN 
+  bigquery-public-data.thelook_ecommerce.order_items oi
+  on
+  e.id = oi.id
+JOIN
+  bigquery-public-data.thelook_ecommerce.orders o
+  on
+  o.user_id = oi.user_id
+JOIN
+  bigquery-public-data.thelook_ecommerce.products p
+  on
+  p.id = oi.product_id
+JOIN
+  bigquery-public-data.thelook_ecommerce.distribution_centers dc
+  on
+  p.distribution_center_id = dc.id
+)
+
+##########################  CTE to View Final Table, Save as BigQuery Table 'full_table'  ####################################
+
+SELECT
+  *
+FROM
+  fulltable
+
+##########################  full_table Queries for Analysis  ####################################
+
+--- Drop Unneeded Columns ---
+ALTER TABLE stats.full_table
+DROP COLUMN sequence_number,
+DROP COLUMN ip_address,
+DROP COLUMN uri,
+DROP COLUMN id_1,
+DROP COLUMN user_id_1,
+DROP COLUMN created_at_1,
+DROP COLUMN order_id_1,
+DROP COLUMN status_1,
+DROP COLUMN created_at_2,
+DROP COLUMN returned_at_1,
+DROP COLUMN shipped_at_1,
+DROP COLUMN delivered_at_1,
+DROP COLUMN id_2,
+DROP COLUMN id_3,
+DROP COLUMN user_id_2,
+DROP COLUMN latitude,
+DROP COLUMN longitude;
+
+--- Total Sales ---
+SELECT COUNT(order_id) as total_sales
+FROM stats.full_table;
+
+--- Top-selling Products and Categories with Percentage of Total Sales ---
+WITH ProductSales as (
+    SELECT product_id, name, category, SUM(num_of_item) as total_quantity_sold
+    FROM stats.full_table
+    GROUP BY product_id, name, category
+)
+SELECT product_id, name, category,
+       total_quantity_sold,
+       total_quantity_sold / SUM(total_quantity_sold) OVER () * 100 as sales_percentage
+FROM ProductSales
+ORDER BY total_quantity_sold DESC
+LIMIT 10;
+
+--- Traffic Source Analysis with Cumulative Order Count ---
+WITH TrafficSourceStats as (
+    SELECT traffic_source, COUNT(DISTINCT order_id) as order_count
+    FROM stats.full_table
+    GROUP BY traffic_source
+)
+SELECT traffic_source, order_count,
+       SUM(order_count) OVER (ORDER BY order_count DESC) as cumulative_order_count
+FROM TrafficSourceStats;
+
+-- Browser Usage with Percentile Rank
+WITH BrowserStats as (
+    SELECT browser, COUNT(DISTINCT order_id) as order_count
+    FROM stats.full_table
+    GROUP BY browser
+)
+SELECT browser, order_count,
+       PERCENT_RANK() OVER (ORDER BY order_count) as percentile_rank
+FROM BrowserStats;
+
+--- Customer Distribution by City with Population Analysis ---
+WITH CityStats as (
+    SELECT city, COUNT(DISTINCT order_id) as order_count
+    FROM stats.full_table
+    GROUP BY city
+)
+SELECT city, order_count,
+       order_count / MAX(order_count) OVER () as population_percentage
+FROM CityStats;
+
+--- Order Status Analysis with Time Buckets ---
+WITH OrderStatusStats as (
+    SELECT status, COUNT(DISTINCT order_id) as order_count
+    FROM stats.full_table
+    GROUP BY status
+)
+SELECT status, order_count,
+       NTILE(4) OVER (ORDER BY order_count) as time_bucket
+FROM OrderStatusStats;
+
+--- Customer Behavior and Segmentation Based on Product Categories ---
+WITH CustomerCategoryBehavior as (
+    SELECT user_id,
+           COUNT(DISTINCT order_id) as total_orders,
+           COUNT(DISTINCT category) as unique_categories_count,
+           STRING_AGG(DISTINCT category, ', ') as unique_categories_list
+    FROM stats.full_table
+    GROUP BY user_id
+)
+SELECT user_id, total_orders, unique_categories_count, unique_categories_list,
+       CASE
+           WHEN unique_categories_count >= 3 THEN 'Diverse Shopper'
+           WHEN unique_categories_count = 1 THEN 'Specialized Shopper'
+           ELSE 'Moderate Shopper'
+       END as shopper_segment
+FROM CustomerCategoryBehavior
+ORDER BY total_orders DESC
+LIMIT 10;
+
+--- Frequently Purchased Together - Product Association ---
+WITH Productassociations as (
+    SELECT a.product_id as product1, b.product_id as product2,
+           COUNT(DISTINCT a.order_id) as co_occurrences
+    FROM stats.full_table a
+    JOIN stats.full_table b ON a.order_id = b.order_id AND a.product_id < b.product_id
+    GROUP BY product1, product2
+)
+SELECT product1, product2, co_occurrences
+FROM Productassociations
+ORDER BY co_occurrences DESC
+LIMIT 10;
+
